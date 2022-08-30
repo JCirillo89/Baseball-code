@@ -1,0 +1,132 @@
+# I wanted to see how many times Tony LaRussa intentionally walked Barry Bonds
+# during his career, and what the context was for each of those IBBs. This code
+# converts Retrosheet data into .csv files and reads them into R using methods
+# described in Appendix A of "Analyzing Baseball Data With R, Second Edition",
+# by Max Marchi, Jim Albert, and Benjamin S. Baumer, and assumes you have the
+# knowledge to do this. I then wrote a simple function to parse through that 
+# data and filer for all instances where Bonds was intentionally walked against 
+# the St. Louis Cardinals from 1996-2007, the only years he faced a LaRussa 
+# team. This query assumes that LaRussa was the active manager for each game 
+# (ie. he wasn't serving a suspension, etc...).
+
+# Load packages
+
+library(tidyverse)
+library(Lahman)
+setwd("E:/Retrosheet/unzipped") # enter your wd here
+source("parse_retrosheet_pbp.R")
+
+# Create a list of all seasons where LaRussa managed against Barry Bonds. This
+# began in 1996 and continued through 2007 when Bonds retired.
+
+seasons <- 1996:2007
+
+# The for loop will create CSV files from the .EV files that Retrosheet 
+# provides. The CSV files will populate in your working directory.
+
+for (x in seasons){
+  parse.retrosheet.pbp(x)
+}
+
+# Unfortunately, because some columns are different Types, I had to read 
+# all the CSV files into R one at a time. There's probably a more efficient way
+# to do this, but this will do for now. 
+# The 'fields' dataframe can be found on MaxToki's GitHub: https://github.com/maxtoki/baseball_R
+# and contains the headers for Retrosheets play by play data. We need data 
+# stored in the Header column.
+
+all1996 <- read_csv("all1996.csv", col_names = pull(fields, Header))
+all1997 <- read_csv("all1997.csv", col_names = pull(fields, Header))
+all1998 <- read_csv("all1998.csv", col_names = pull(fields, Header))
+all1999 <- read_csv("all1999.csv", col_names = pull(fields, Header))
+all2000 <- read_csv("all2000.csv", col_names = pull(fields, Header))
+all2001 <- read_csv("all2001.csv", col_names = pull(fields, Header))
+all2002 <- read_csv("all2002.csv", col_names = pull(fields, Header))
+all2003 <- read_csv("all2003.csv", col_names = pull(fields, Header))
+all2004 <- read_csv("all2004.csv", col_names = pull(fields, Header))
+all2005 <- read_csv("all2005.csv", col_names = pull(fields, Header))
+all2006 <- read_csv("all2006.csv", col_names = pull(fields, Header))
+all2007 <- read_csv("all2007.csv", col_names = pull(fields, Header))
+
+# Now that all the data is in R, we'll start to work on our query.
+
+# We'll start by finding Barry Bonds' retroID in the People dataframe that comes
+# with the Lahman database.
+
+bondsID <- People %>%
+  filter(nameFirst == "Barry", nameLast == "Bonds") %>%
+  pull(retroID)
+
+# Define function bondsIBB, which takes 1 argument, a dataframe for a 
+# particular season.
+
+bondsIBB <- function(season){
+  season %>%
+    # filter for all Bonds plate appearances that ended in an IBB, Event_CD 15
+    filter(BAT_ID == bondsID, EVENT_CD == 15) %>%
+    # To extract the opponent, I pulled the first 3 characters of the GAME_ID
+    # to set the home team, and wrote an ifelse statement to see who the Giants
+    # were playing.
+    mutate(HOME_TEAM_ID = str_sub(GAME_ID, start = 1, end = 3),
+           OPPONENT = ifelse(HOME_TEAM_ID == "SFN", AWAY_TEAM_ID, HOME_TEAM_ID)) %>%
+    # Filter for St. Louis, the only team LaRussa managed during this time
+    filter(OPPONENT == "SLN") %>%
+    # Select relevant columns
+    select(GAME_ID, BAT_ID, PIT_ID, PITCH_SEQ_TX, OPPONENT, INN_CT, OUTS_CT, RUN1_DEST_ID,
+           RUN2_DEST_ID, RUN3_DEST_ID)
+}
+
+# Create a list of the data frames
+
+seasons_list <- list(all1996, all1997, all1998, all1999, all2000, all2001, 
+             all2002, all2003, all2004, all2005, all2006, all2007)
+
+# Use lapply to iterate the function over the dataframes
+
+list_data <- lapply(seasons_list, bondsIBB)
+
+# Separate the list of dataframes into individual data frames. This will return
+# a few empty dataframes since there are seasons where LaRussa did not 
+# intentionally walk Bonds.
+
+names(list_data) <- paste0('df', seq_along(list_data))
+list2env(list_data, .GlobalEnv)
+
+# Use bind rows to create one dataframe
+
+TLR_IBB_BONDS <- bind_rows(df1, df2, df3, df4, df5, df6, df7, df8, df9, df10,
+                           df11, df12)
+
+# This gets the job done, now we're just tidying up some column names.
+
+# Pull pitcher IDs so we can look up their names in the People dataframe
+
+pitcherID <- TLR_IBB_BONDS %>%
+  pull(PIT_ID)
+
+pitcherNames <- People %>%
+  filter(retroID %in% pitcherID) %>%
+  select(retroID, nameFirst, nameLast)
+
+# Use Bonds' ID so we can find his name
+
+bondsName = People %>%
+  filter(retroID == bondsID) %>%
+  select(retroID, nameFirst, nameLast)
+
+# Use an inner join to add player names
+
+TLR_IBB_BONDS <- TLR_IBB_BONDS %>%
+  inner_join(pitcherNames, by = c("PIT_ID" = "retroID")) %>%
+  inner_join(bondsName, by = c("BAT_ID" = "retroID"), 
+             suffix = c("_pitcher", "_bonds"))
+
+# Use mutate to add pitcherName and batterName, and select relevant columns
+
+TLR_IBB_BONDS <- TLR_IBB_BONDS %>%
+  mutate(pitcherName = paste(nameFirst_pitcher, nameLast_pitcher),
+         batterName = paste(nameFirst_bonds, nameLast_bonds)) %>%
+  select(GAME_ID, Batter = batterName, Pitcher = pitcherName, 
+         Sequence = , PITCH_SEQ_TX,
+         Inning = INN_CT, Outs = OUTS_CT, RUN1_DEST_ID, RUN2_DEST_ID, 
+         RUN3_DEST_ID, OPPONENT)
